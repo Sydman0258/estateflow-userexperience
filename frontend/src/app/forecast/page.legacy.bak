@@ -1,0 +1,1005 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import Navbar from "@/components/Navbar";
+
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+interface Player {
+  player_id: number;
+  player: string;
+  position?: string | null;
+  last_season: number;
+  last_pts: number;
+  last_age: number;
+  seasons_played: number;
+}
+
+interface HistoryRow {
+  season: number;
+  age?: number;
+  games_played?: number;
+  per_game: Record<string, number>;
+  season_totals: Record<string, number>;
+}
+
+interface PredictResult {
+  player: string;
+  player_id: number;
+  season_context?: number;
+  age?: number;
+  position?: string | null;
+  predicted_pts: number;
+  predicted_per_game: Record<string, number>;
+  last_per_game: Record<string, number>;
+  last_season_totals: Record<string, number>;
+  games_played?: number;
+  history: HistoryRow[];
+  archetype?: number;
+  model_used: string;
+  confidence_note: string;
+}
+
+interface Metrics {
+  metrics: Record<string, Record<string, number>>;
+  feature_importance: { feature: string; importance: number }[];
+  n_players: number;
+  seasons: number[];
+}
+
+interface EvalCheck {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail";
+  detail: string;
+}
+
+interface SplitScores {
+  rmse: number | null;
+  r2: number | null;
+  bias: number | null;
+}
+
+interface Evaluation {
+  verdict: {
+    status: "balanced" | "mostly_balanced" | "not_balanced";
+    headline: string;
+  };
+  splits: Record<string, { rows: number; seasons: string }>;
+  checks: EvalCheck[];
+  by_stat: Record<string, { train?: SplitScores; holdout: SplitScores }>;
+  charts?: {
+    calibration: { predicted: number; actual: number; n: number }[];
+    error_histogram: { label: string; count: number }[];
+  };
+  segments: Record<
+    string,
+    { group: string; n: number; bias: number; skewed: boolean }[]
+  >;
+}
+
+const STAT_LABELS: Record<string, string> = {
+  points: "Points",
+  rebounds: "Rebounds",
+  assists: "Assists",
+  steals: "Steals",
+  blocks: "Blocks",
+  turnovers: "Turnovers",
+  minutes: "Minutes",
+};
+
+function plainFeatureName(f: string) {
+  return String(f)
+    .replace(/pts/g, "points")
+    .replace(/trb/g, "rebounds")
+    .replace(/ast/g, "assists")
+    .replace(/mp/g, "minutes")
+    .replace(/gp/g, "games played")
+    .replace(/tov/g, "turnovers")
+    .replace(/stl/g, "steals")
+    .replace(/blk/g, "blocks")
+    .replace(/game_score/g, "game score")
+    .replace(/avail_proxy/g, "games availability")
+    .replace(/age_sq/g, "age squared")
+    .replace(/age_cu/g, "age cubed")
+    .replace(/_lag(\d)/g, " ($1 season ago)")
+    .replace(/_roll(\d)/g, " (average of last $1 seasons)")
+    .replace(/_yoy/g, " (year-over-year change)")
+    .replace(/_/g, " ");
+}
+
+function modelLabel(name: string) {
+  const map: Record<string, string> = {
+    xgboost: "XGBoost",
+  };
+  return map[name] || name;
+}
+
+function themeColors() {
+  // Coolors palette + colorblind-safe chart series (teal / coral / orange)
+  const defaults = {
+    ink: "#1a0f10",
+    mute: "#6b5a5c",
+    line: "#e4dce2",
+    bg: "#f7f5fa",
+    accent: "#f04251",
+    teal: "#2d8b76",
+    mint: "#65cdb6",
+    coral: "#f04251",
+    orange: "#f26440",
+    crimson: "#aa0e1b",
+  };
+  if (typeof window === "undefined") return defaults;
+  const s = getComputedStyle(document.documentElement);
+  const g = (name: string, fallback: string) =>
+    s.getPropertyValue(name).trim() || fallback;
+  return {
+    ink: g("--ink", defaults.ink),
+    mute: g("--mute", defaults.mute),
+    line: g("--line", defaults.line),
+    bg: g("--bg", defaults.bg),
+    accent: g("--accent", defaults.accent),
+    teal: g("--teal", defaults.teal),
+    mint: g("--mint", defaults.mint),
+    coral: g("--coral", defaults.coral),
+    orange: g("--orange", defaults.orange),
+    crimson: g("--crimson", defaults.crimson),
+  };
+}
+
+const EV_TEAL = "rgba(45,139,118,0.85)";
+const EV_GREY = "rgba(140,125,128,0.55)";
+const EV_ORANGE = "rgba(242,100,64,0.9)";
+
+function evBar(
+  Chart: any,
+  canvas: HTMLCanvasElement | null,
+  labels: string[],
+  datasets: any[],
+  opt: { horizontal?: boolean; axis?: string; zero?: boolean } = {}
+) {
+  if (!canvas) return null;
+  const c = themeColors();
+  const valAxis: any = {
+    ticks: { color: c.mute },
+    grid: { color: c.line },
+    title: { display: !!opt.axis, text: opt.axis || "", color: c.mute },
+  };
+  if (opt.zero) valAxis.beginAtZero = true;
+  const catAxis = { ticks: { color: c.mute, font: { size: 11 } }, grid: { display: false } };
+  return new Chart(canvas, {
+    type: "bar",
+    data: { labels, datasets },
+    options: {
+      indexAxis: opt.horizontal ? "y" : "x",
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: datasets.length > 1, labels: { color: c.mute } },
+      },
+      scales: opt.horizontal ? { x: valAxis, y: catAxis } : { x: catAxis, y: valAxis },
+    },
+  });
+}
+
+function BalanceCard({
+  evaluation,
+  chartReady,
+}: {
+  evaluation: Evaluation;
+  chartReady: boolean;
+}) {
+  const refs = useRef<(HTMLCanvasElement | null)[]>([]);
+  const { verdict, checks, by_stat, segments, splits, charts } = evaluation;
+  const attention = checks.filter((c) => c.status !== "pass");
+  const unseen = [splits.val?.seasons, splits.test?.seasons]
+    .filter(Boolean)
+    .join(" and ");
+  const segRows = Object.entries(segments).flatMap(([dim, rows]) =>
+    rows.map((r) => ({
+      label: `${dim.split(" (")[0]}: ${r.group}`,
+      bias: r.bias,
+      skewed: r.skewed,
+    }))
+  );
+
+  useEffect(() => {
+    const Chart = (window as any).Chart;
+    if (!chartReady || !Chart) return;
+    const keys = ["points", "rebounds", "assists", "minutes"].filter((k) => by_stat[k]);
+    const names = keys.map((k) => STAT_LABELS[k] || k);
+    const val = (k: string, split: "train" | "holdout", f: keyof SplitScores) =>
+      by_stat[k][split]?.[f] ?? null;
+    const status = (id: string) => checks.find((c) => c.id === id)?.status;
+    const cal = charts?.calibration || [];
+    const hist = charts?.error_histogram || [];
+    const made = [
+      evBar(Chart, refs.current[0], names, [
+        { label: "Training seasons", data: keys.map((k) => val(k, "train", "rmse")), backgroundColor: EV_GREY, borderRadius: 5 },
+        { label: "New seasons", data: keys.map((k) => val(k, "holdout", "rmse")), backgroundColor: EV_TEAL, borderRadius: 5 },
+      ], { axis: "Typical error (per game)", zero: true }),
+      evBar(Chart, refs.current[1], names, [
+        { label: "Training seasons", data: keys.map((k) => val(k, "train", "r2")), backgroundColor: EV_GREY, borderRadius: 5 },
+        { label: "New seasons", data: keys.map((k) => val(k, "holdout", "r2")), backgroundColor: EV_TEAL, borderRadius: 5 },
+      ], { axis: "R²", zero: true }),
+      evBar(Chart, refs.current[2], names, [
+        {
+          label: "Average lean",
+          data: keys.map((k) => val(k, "holdout", "bias")),
+          backgroundColor: keys.map((k) => (status(`bias_${k}`) === "pass" ? EV_TEAL : EV_ORANGE)),
+          borderRadius: 5,
+        },
+      ], { axis: "Prediction minus actual (per game)" }),
+      evBar(Chart, refs.current[3], cal.map((x) => `${x.predicted.toFixed(1)} pts`), [
+        { label: "Predicted", data: cal.map((x) => x.predicted), backgroundColor: EV_GREY, borderRadius: 5 },
+        { label: "Actual", data: cal.map((x) => x.actual), backgroundColor: EV_TEAL, borderRadius: 5 },
+      ], { axis: "Points per game", zero: true }),
+      evBar(Chart, refs.current[4], hist.map((h) => h.label), [
+        { label: "Forecasts", data: hist.map((h) => h.count), backgroundColor: EV_TEAL, borderRadius: 3 },
+      ], { axis: "Number of forecasts" }),
+      evBar(Chart, refs.current[5], segRows.map((r) => r.label), [
+        {
+          label: "Lean (points)",
+          data: segRows.map((r) => r.bias),
+          backgroundColor: segRows.map((r) => (r.skewed ? EV_ORANGE : EV_TEAL)),
+          borderRadius: 4,
+        },
+      ], { horizontal: true, axis: "Prediction minus actual (points per game)" }),
+    ];
+    return () => made.forEach((m) => m?.destroy());
+  }, [chartReady, evaluation]);
+
+  const box = (i: number, title: string, help: string, height = 230, wide = false) => (
+    <div className={wide ? "evbox wide" : "evbox"}>
+      <h4 className="eval-h">{title}</h4>
+      <p className="muted">{help}</p>
+      <div style={{ position: "relative", height }}>
+        <canvas ref={(el) => { refs.current[i] = el; }} />
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="card">
+      <h3>XGBoost model evaluation: is it balanced?</h3>
+      <div className={`verdict verdict-${verdict.status}`}>
+        <strong>{verdict.headline}</strong>
+        <span className="muted">
+          Everything below is scored on seasons XGBoost never trained on ({unseen}).
+        </span>
+      </div>
+      <div className="evgrid">
+        {box(0, "Error: training vs new seasons", "Similar bars = not memorising. A much taller teal bar means it only does well on data it has seen.")}
+        {box(1, "Fit (R²): training vs new seasons", "Higher is better. A big drop from grey to teal signals overfitting.")}
+        {box(2, "Average lean", "Bars near zero are balanced. Above zero = guesses too high on average, below = too low. Orange = worth watching.")}
+        {box(3, "Points: predicted vs actual", "Groups of players sorted by predicted points. Matching bars = well calibrated.")}
+        {box(4, "Points: how far off are the forecasts?", "Prediction minus reality. A bell shape centred on 0 means misses are balanced both ways.")}
+        {box(5, "Lean by player type (points)", "Orange bars are gaps big and consistent enough to be more than noise. Everything else is balanced.", Math.max(260, 26 * segRows.length + 60), true)}
+      </div>
+      {attention.length > 0 && (
+        <>
+          <h4 className="eval-h">What to watch</h4>
+          <ul className="plain">
+            {attention.map((c) => (
+              <li key={c.id}>
+                <strong>{c.label}</strong> — {c.detail}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+const PAGE_SIZE = 24;
+
+export default function ForecastPage() {
+  const [allPlayers, setAllPlayers] = useState<Player[]>([]);
+  const [filtered, setFiltered] = useState<Player[]>([]);
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<Player | null>(null);
+  const [result, setResult] = useState<PredictResult | null>(null);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
+  const [page, setPage] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [chartReady, setChartReady] = useState(false);
+
+  const rmseRef = useRef<HTMLCanvasElement>(null);
+  const featRef = useRef<HTMLCanvasElement>(null);
+  const compareRef = useRef<HTMLCanvasElement>(null);
+  const seriesRef = useRef<HTMLCanvasElement>(null);
+  const totalsRef = useRef<HTMLCanvasElement>(null);
+  const charts = useRef<Record<string, any>>({});
+
+  useEffect(() => {
+    if ((window as any).Chart) {
+      setChartReady(true);
+      return;
+    }
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
+    s.onload = () => setChartReady(true);
+    document.body.appendChild(s);
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API}/players?limit=200`);
+        if (!res.ok) throw new Error("Could not load players from the API.");
+        const data: Player[] = await res.json();
+        setAllPlayers(data);
+        setFiltered(data);
+      } catch (e: any) {
+        setError(
+          e.message ||
+            "Cannot reach the API. Start FastAPI on port 8000."
+        );
+      }
+      try {
+        setMetrics(await (await fetch(`${API}/metrics`)).json());
+      } catch {
+        /* optional */
+      }
+      try {
+        const res = await fetch(`${API}/evaluation`);
+        if (res.ok) setEvaluation(await res.json());
+      } catch {
+        /* optional: older model bundles have no evaluation report */
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!chartReady || !metrics || !(window as any).Chart) return;
+    const Chart = (window as any).Chart;
+    const c = themeColors();
+    const entries = Object.entries(metrics.metrics || {});
+
+    charts.current.rmse?.destroy();
+    if (rmseRef.current) {
+      charts.current.rmse = new Chart(rmseRef.current, {
+        type: "bar",
+        data: {
+          labels: entries.map(([n]) => modelLabel(n)),
+          datasets: [
+            {
+              label: "Typical error (points per game)",
+              data: entries.map(([, v]) => v.rmse),
+              backgroundColor: c.teal + "cc",
+              borderRadius: 6,
+            },
+          ],
+        },
+        options: {
+          indexAxis: "y",
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: {
+              beginAtZero: true,
+              ticks: { color: c.mute },
+              grid: { color: c.line },
+            },
+            y: { ticks: { color: c.mute }, grid: { display: false } },
+          },
+        },
+      });
+    }
+
+    const feats = (metrics.feature_importance || []).slice(0, 10);
+    charts.current.feat?.destroy();
+    if (featRef.current) {
+      charts.current.feat = new Chart(featRef.current, {
+        type: "bar",
+        data: {
+          labels: feats.map((f) => plainFeatureName(f.feature)),
+          datasets: [
+            {
+              data: feats.map((f) => +(f.importance * 100).toFixed(2)),
+              backgroundColor: c.orange + "cc",
+              borderRadius: 6,
+            },
+          ],
+        },
+        options: {
+          indexAxis: "y",
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx: any) => `${ctx.raw}% of total feature importance`,
+              },
+            },
+          },
+          scales: {
+            x: {
+              beginAtZero: true,
+              ticks: { color: c.mute, callback: (v: any) => v + "%" },
+              grid: { color: c.line },
+            },
+            y: {
+              ticks: { color: c.mute, font: { size: 11 } },
+              grid: { display: false },
+            },
+          },
+        },
+      });
+    }
+  }, [chartReady, metrics]);
+
+  useEffect(() => {
+    if (!chartReady || !result || !(window as any).Chart) return;
+    const Chart = (window as any).Chart;
+    const c = themeColors();
+
+    const pred = result.predicted_per_game || { points: result.predicted_pts };
+    const last = result.last_per_game || {};
+    const keys = Object.keys(STAT_LABELS).filter(
+      (k) => last[k] != null || pred[k] != null
+    );
+
+    charts.current.compare?.destroy();
+    if (compareRef.current && keys.length) {
+      charts.current.compare = new Chart(compareRef.current, {
+        type: "bar",
+        data: {
+          labels: keys.map((k) => STAT_LABELS[k] || k),
+          datasets: [
+            {
+              label: "Most recent season (per game)",
+              data: keys.map((k) => Number(last[k] ?? 0)),
+              backgroundColor: c.teal + "aa",
+              borderRadius: 4,
+            },
+            {
+              label: "Forecast (per game)",
+              data: keys.map((k) => Number(pred[k] ?? 0)),
+              backgroundColor: c.coral + "cc",
+              borderRadius: 4,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { labels: { color: c.mute } },
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: { color: c.mute },
+              grid: { color: c.line },
+            },
+            x: { ticks: { color: c.mute }, grid: { display: false } },
+          },
+        },
+      });
+    }
+
+    const hist = result.history || [];
+    charts.current.series?.destroy();
+    if (seriesRef.current && hist.length > 1) {
+      charts.current.series = new Chart(seriesRef.current, {
+        type: "line",
+        data: {
+          labels: hist.map((h) => String(h.season)),
+          datasets: [
+            {
+              label: "Points per game",
+              data: hist.map((h) => h.per_game?.points ?? 0),
+              borderColor: c.coral,
+              backgroundColor: "transparent",
+              borderWidth: 2.5,
+              pointRadius: 3,
+              pointHoverRadius: 5,
+              tension: 0.2,
+              fill: false,
+            },
+            {
+              label: "Rebounds per game",
+              data: hist.map((h) => h.per_game?.rebounds ?? 0),
+              borderColor: c.teal,
+              backgroundColor: "transparent",
+              borderWidth: 2,
+              pointRadius: 2.5,
+              tension: 0.2,
+              fill: false,
+            },
+            {
+              label: "Assists per game",
+              data: hist.map((h) => h.per_game?.assists ?? 0),
+              borderColor: c.orange,
+              backgroundColor: "transparent",
+              borderWidth: 2,
+              pointRadius: 2.5,
+              tension: 0.2,
+              fill: false,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: {
+              position: "top",
+              labels: {
+                color: c.ink,
+                usePointStyle: true,
+                pointStyle: "line",
+                padding: 16,
+                font: { size: 12 },
+              },
+            },
+            tooltip: {
+              callbacks: {
+                label: (ctx: any) =>
+                  `${ctx.dataset.label}: ${Number(ctx.raw).toFixed(1)}`,
+              },
+            },
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: "Per game",
+                color: c.mute,
+              },
+              ticks: { color: c.mute },
+              grid: { color: c.line + "99" },
+            },
+            x: {
+              title: {
+                display: true,
+                text: "Season",
+                color: c.mute,
+              },
+              ticks: {
+                color: c.mute,
+                maxRotation: 0,
+                autoSkip: true,
+                maxTicksLimit: 12,
+              },
+              grid: { display: false },
+            },
+          },
+        },
+      });
+    }
+
+    charts.current.totals?.destroy();
+    if (totalsRef.current && hist.length > 1) {
+      charts.current.totals = new Chart(totalsRef.current, {
+        type: "bar",
+        data: {
+          labels: hist.map((h) => String(h.season)),
+          datasets: [
+            {
+              label: "Season total points",
+              data: hist.map((h) => h.season_totals?.points ?? 0),
+              backgroundColor: c.mint + "bb",
+              borderRadius: 4,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: c.mute } } },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: { color: c.mute },
+              grid: { color: c.line },
+            },
+            x: { ticks: { color: c.mute }, grid: { display: false } },
+          },
+        },
+      });
+    }
+  }, [chartReady, result]);
+
+  const search = async (q: string) => {
+    setQuery(q);
+    setPage(0);
+    if (!q.trim()) {
+      setFiltered(allPlayers);
+      return;
+    }
+    try {
+      const res = await fetch(
+        `${API}/players?q=${encodeURIComponent(q)}&limit=200`
+      );
+      if (res.ok) setFiltered(await res.json());
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const runPredict = async () => {
+    if (!selected) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/predict`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          player: selected.player,
+          player_id: selected.player_id,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setResult(await res.json());
+    } catch (e: any) {
+      setError(e.message || "Forecast failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const slice = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const lastPts = result?.last_per_game?.points ?? selected?.last_pts ?? 0;
+  const predPts = result?.predicted_pts ?? 0;
+  const delta = predPts - Number(lastPts);
+  const direction =
+    delta > 0.4 ? "up" : delta < -0.4 ? "down" : "about the same";
+  const unitsLookWrong =
+    predPts > 80 || (result?.last_per_game?.points != null && result.last_per_game.points > 80);
+
+  return (
+    <>
+      <Navbar />
+      <main>
+        <div className="forecast-wrap">
+          <p className="muted" style={{ marginBottom: "0.75rem", fontSize: "0.9rem" }}>
+            <Link href="/">Portfolio</Link> · NBA Model
+          </p>
+          <h2>NBA player forecast</h2>
+          <p className="lede">
+            Full per-game and season-total stats from the player&apos;s recent
+            history, plus next-season forecasts for points, rebounds, assists,
+            and minutes from XGBoost regression models. Numbers are estimates
+            from historical patterns — not guarantees.
+          </p>
+
+          <div className="card" style={{ marginBottom: "1.25rem" }}>
+            <h3>How to use it</h3>
+            <ol style={{ margin: "0.5rem 0 0 1.2rem", color: "var(--mute)" }}>
+              <li>
+                <strong style={{ color: "var(--ink)" }}>Choose a player</strong>{" "}
+                (list or search). We start from their most recent season.
+              </li>
+              <li>
+                <strong style={{ color: "var(--ink)" }}>Run the forecast</strong>{" "}
+                for points, rebounds, assists, and minutes.
+              </li>
+              <li>
+                <strong style={{ color: "var(--ink)" }}>Read charts</strong> for
+                per-game comparison, career trend, and season totals.
+              </li>
+            </ol>
+          </div>
+
+          {error && (
+            <div className="card" style={{ borderColor: "var(--coral, #f04251)", color: "var(--coral, #f04251)" }}>
+              {error}
+            </div>
+          )}
+
+          <div
+            className="forecast-grid"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1.05fr 0.95fr",
+              gap: "1.25rem",
+            }}
+          >
+            <div>
+              <div className="card">
+                <h3>Choose a player</h3>
+                <div className="form-row">
+                  <label style={{ flex: 1 }}>
+                    Search by name
+                    <input
+                      type="text"
+                      placeholder="e.g. LeBron James…"
+                      value={query}
+                      onChange={(e) => search(e.target.value)}
+                    />
+                  </label>
+                </div>
+                <p className="muted" style={{ fontSize: "0.85rem", marginBottom: "0.5rem" }}>
+                  Top scorers by default · {filtered.length} loaded
+                </p>
+                <div className="player-list">
+                  {slice.map((p) => (
+                    <div
+                      key={p.player_id}
+                      className={`player-chip ${
+                        selected?.player_id === p.player_id ? "active" : ""
+                      }`}
+                      onClick={() => {
+                        setSelected(p);
+                        setResult(null);
+                      }}
+                    >
+                      <strong>{p.player}</strong>
+                      <br />
+                      <span style={{ color: "var(--mute)", fontSize: "0.78rem" }}>
+                        {p.position || "—"} · age {Math.round(p.last_age || 0)} ·{" "}
+                        {Number(p.last_pts).toFixed(1)} points
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "0.5rem",
+                    marginTop: "0.65rem",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <button
+                    className="btn"
+                    style={{
+                      background: "transparent",
+                      color: "var(--ink)",
+                      border: "1px solid var(--line)",
+                    }}
+                    type="button"
+                    onClick={() => page > 0 && setPage(page - 1)}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    className="btn"
+                    style={{
+                      background: "transparent",
+                      color: "var(--ink)",
+                      border: "1px solid var(--line)",
+                    }}
+                    type="button"
+                    onClick={() =>
+                      (page + 1) * PAGE_SIZE < filtered.length &&
+                      setPage(page + 1)
+                    }
+                  >
+                    Next
+                  </button>
+                  <span className="muted" style={{ fontSize: "0.85rem" }}>
+                    Page {page + 1} of {totalPages}
+                  </span>
+                </div>
+                <p className="muted" style={{ marginTop: "0.75rem", fontSize: "0.9rem" }}>
+                  Selected:{" "}
+                  <strong style={{ color: "var(--ink)" }}>
+                    {selected
+                      ? `${selected.player} (${selected.last_season})`
+                      : "none yet"}
+                  </strong>
+                </p>
+                <div className="form-row" style={{ marginTop: "0.85rem" }}>
+                  <button
+                    className="btn"
+                    disabled={!selected || loading}
+                    onClick={runPredict}
+                    type="button"
+                  >
+                    {loading ? "Working…" : "Forecast next season"}
+                  </button>
+                </div>
+              </div>
+
+              {result && (
+                <div className="card">
+                  <h3>Forecast result</h3>
+                  <p className="result">
+                    {result.predicted_pts.toFixed(1)}{" "}
+                    <span
+                      style={{
+                        fontSize: "1rem",
+                        fontWeight: 500,
+                        color: "var(--mute)",
+                      }}
+                    >
+                      points per game next season
+                    </span>
+                  </p>
+                  <p className="muted" style={{ marginTop: "0.5rem" }}>
+                    {result.player}
+                    {result.position ? ` · ${result.position}` : ""}
+                    {result.age != null ? ` · age ${result.age}` : ""} · based
+                    on {result.season_context}
+                    {result.games_played
+                      ? ` · ${result.games_played} games that season`
+                      : ""}
+                    {" · Model: "}
+                    <strong style={{ color: "var(--ink)" }}>
+                      {modelLabel("xgboost")}
+                    </strong>
+                  </p>
+                  {unitsLookWrong && (
+                    <p style={{ marginTop: "0.75rem", color: "var(--coral, #f04251)", fontSize: "0.95rem" }}>
+                      These numbers look like full-season totals, not per-game averages.
+                      Retrain after updating the data loader (it now converts totals → per game).
+                    </p>
+                  )}
+                  <p
+                    style={{
+                      marginTop: "0.85rem",
+                      padding: "0.85rem 1rem",
+                      borderLeft: "3px solid var(--accent)",
+                    }}
+                  >
+                    After averaging{" "}
+                    <strong>{Number(lastPts).toFixed(1)}</strong> points per
+                    game in {result.season_context}, the model expects{" "}
+                    <strong>{result.predicted_pts.toFixed(1)}</strong> points per
+                    game next year — roughly <strong>{direction}</strong> (
+                    {delta >= 0 ? "+" : ""}
+                    {delta.toFixed(1)}).
+                  </p>
+
+                  <h3 style={{ marginTop: "1.25rem", fontSize: "1.05rem" }}>
+                    Most recent season — per game
+                  </h3>
+                  <div className="metrics-grid">
+                    {Object.entries(STAT_LABELS).map(([k, label]) =>
+                      result.last_per_game?.[k] != null ? (
+                        <div key={k} className="metric">
+                          <strong>
+                            {Number(result.last_per_game[k]).toFixed(1)}
+                          </strong>
+                          <span>{label} per game</span>
+                        </div>
+                      ) : null
+                    )}
+                  </div>
+
+                  <h3 style={{ marginTop: "1.25rem", fontSize: "1.05rem" }}>
+                    Most recent season — season totals
+                  </h3>
+                  <div className="metrics-grid">
+                    {Object.entries(STAT_LABELS).map(([k, label]) =>
+                      result.last_season_totals?.[k] != null ? (
+                        <div key={k} className="metric">
+                          <strong>
+                            {Number(result.last_season_totals[k]).toFixed(0)}
+                          </strong>
+                          <span>Total {label.toLowerCase()}</span>
+                        </div>
+                      ) : null
+                    )}
+                  </div>
+
+                  <h3 style={{ marginTop: "1.25rem", fontSize: "1.05rem" }}>
+                    Forecast — per game next season
+                  </h3>
+                  <div className="metrics-grid">
+                    {Object.entries(result.predicted_per_game || {}).map(
+                      ([k, v]) => (
+                        <div key={k} className="metric">
+                          <strong>{Number(v).toFixed(1)}</strong>
+                          <span>
+                            {STAT_LABELS[k] || k} per game (forecast)
+                          </span>
+                        </div>
+                      )
+                    )}
+                  </div>
+
+                  <h3 style={{ marginTop: "1rem", fontSize: "1rem" }}>
+                    Forecast model
+                  </h3>
+                  <p className="muted">
+                    XGBoost regression models forecast points, rebounds,
+                    assists, and minutes. The accuracy and feature-importance
+                    charts show the points model&apos;s results.
+                  </p>
+                  {result.archetype != null && (
+                    <>
+                      <h3 style={{ marginTop: "1rem", fontSize: "1rem" }}>
+                        Player group
+                      </h3>
+                      <p className="muted">
+                        Group #{result.archetype}: similar statistical profiles
+                        help the model borrow strength from comparable careers.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="card">
+                <h3>XGBoost accuracy for points</h3>
+                <p className="muted">
+                  Typical points-per-game error on held-out seasons. Lower is
+                  better.
+                </p>
+                {metrics && (
+                  <div className="metrics-grid">
+                    {Object.entries(metrics.metrics).map(([name, m]) => (
+                      <div key={name} className="metric">
+                        <strong>{m.rmse.toFixed(2)}</strong>
+                        <span>Typical error · {modelLabel(name)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ position: "relative", height: 200, marginTop: 8 }}>
+                  <canvas ref={rmseRef} />
+                </div>
+              </div>
+
+              {evaluation && (
+                <BalanceCard evaluation={evaluation} chartReady={chartReady} />
+              )}
+
+              <div className="card">
+                <h3>Which features matter to the points forecast</h3>
+                <div style={{ position: "relative", height: 240, marginTop: 8 }}>
+                  <canvas ref={featRef} />
+                </div>
+              </div>
+
+              {result && (
+                <>
+                  <div className="card">
+                    <h3>Per game: last season vs forecast</h3>
+                    <div style={{ position: "relative", height: 240, marginTop: 8 }}>
+                      <canvas ref={compareRef} />
+                    </div>
+                  </div>
+                  {(result.history?.length || 0) > 1 && (
+                    <>
+                      <div className="card">
+                        <h3>Career trend (per game over seasons)</h3>
+                        <div
+                          style={{ position: "relative", height: 240, marginTop: 8 }}
+                        >
+                          <canvas ref={seriesRef} />
+                        </div>
+                      </div>
+                      <div className="card">
+                        <h3>Season total points over time</h3>
+                        <div
+                          style={{ position: "relative", height: 220, marginTop: 8 }}
+                        >
+                          <canvas ref={totalsRef} />
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </main>
+      <style jsx global>{`
+        @media (max-width: 900px) {
+          .forecast-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
+      `}</style>
+    </>
+  );
+}
