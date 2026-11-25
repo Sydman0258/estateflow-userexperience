@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils.translation import gettext_lazy as _
 
-from accounts.models import User
+from accounts.models import AuthEvent, User
 
 
 @admin.register(User)
@@ -29,3 +29,17 @@ class UserAdmin(BaseUserAdmin):
             },
         ),
     )
+
+
+@admin.register(AuthEvent)
+class AuthEventAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "user", "event", "success", "ip_address")
+    list_filter = ("event", "success")
+    search_fields = ("user__email", "ip_address")
+    readonly_fields = ("user", "event", "success", "ip_address", "user_agent", "created_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

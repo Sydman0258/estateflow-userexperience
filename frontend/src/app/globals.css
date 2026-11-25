@@ -15,6 +15,19 @@
   --color-primary: var(--primary);
   --color-primary-dark: var(--primary-dark);
   --font-sans: var(--font-geist-sans);
+
+  /* Landing page brand tokens: Himalayan dusk, Newari brick, marigold */
+  --color-ink: #0e1b33;
+  --color-snow: #f4f6f8;
+  --color-brick: #b8402a;
+  --color-brick-deep: #8f2f1d;
+  --color-marigold: #f4b63f;
+  --color-mist: #dde5ee;
+  --color-graphite: #4a5568;
+
+  --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-instrument), ui-sans-serif, system-ui, sans-serif;
+  --font-deva: var(--font-tiro), serif;
 }
 
 body {
@@ -26,4 +39,31 @@ body {
 /* Smooth scroll */
 html {
   scroll-behavior: smooth;
+}
+
+/* ── Landing page: the one orchestrated moment ──
+   The windows of the hero house light up one after another on load. */
+@keyframes window-on {
+  from { fill: #1d2742; }
+  to   { fill: #f4b63f; }
+}
+@keyframes glow-on {
+  from { opacity: 0; }
+  to   { opacity: 0.55; }
+}
+.win {
+  fill: #f4b63f;
+  animation: window-on 1.1s cubic-bezier(0.2, 0, 0, 1) both;
+  animation-delay: var(--d, 0s);
+}
+.glow {
+  fill: #f4b63f;
+  opacity: 0.55;
+  animation: glow-on 1.1s cubic-bezier(0.2, 0, 0, 1) both;
+  animation-delay: var(--d, 0s);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .win, .glow { animation: none; }
 }

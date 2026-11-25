@@ -74,6 +74,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "userexperience.middleware.SecurityHeadersMiddleware",
 ]
 
 ROOT_URLCONF = "userexperience.urls"
@@ -166,6 +167,10 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": "60/minute",
         "user": "300/minute",
+        # Payment endpoints: tight limits against abuse and card testing
+        "payment_create": "30/hour",
+        "payment_charge": "30/hour",
+        "payment_verify": "60/hour",
     },
     "DEFAULT_RENDERER_CLASSES": (
         "rest_framework.renderers.JSONRenderer",
@@ -240,3 +245,28 @@ LOGGING = {
         },
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Payments
+# ---------------------------------------------------------------------------
+from django.core.exceptions import ImproperlyConfigured  # noqa: E402
+
+FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
+
+# True  -> eSewa test environment + sandbox card gateway (test cards only).
+# False -> production: sandbox card gateway is disabled and eSewa live keys are REQUIRED.
+PAYMENT_SANDBOX = env.bool("PAYMENT_SANDBOX", default=DEBUG)
+PAYMENT_EXPIRY_MINUTES = env.int("PAYMENT_EXPIRY_MINUTES", default=30)
+
+# eSewa ePay v2. Defaults are eSewa's public TEST credentials (safe to be public).
+ESEWA_PRODUCT_CODE = env("ESEWA_PRODUCT_CODE", default="EPAYTEST")
+ESEWA_SECRET_KEY = env("ESEWA_SECRET_KEY", default="8gBm/:&EnhH.1/q")
+ESEWA_FORM_URL = env("ESEWA_FORM_URL", default="https://rc-epay.esewa.com.np/api/epay/main/v2/form")
+ESEWA_STATUS_URL = env("ESEWA_STATUS_URL", default="https://rc.esewa.com.np/api/epay/transaction/status/")
+
+if not PAYMENT_SANDBOX and ESEWA_PRODUCT_CODE == "EPAYTEST":
+    raise ImproperlyConfigured("Set live ESEWA_PRODUCT_CODE / ESEWA_SECRET_KEY when PAYMENT_SANDBOX is off.")
+
+# Only trust X-Forwarded-For when running behind a proxy you control.
+TRUST_X_FORWARDED_FOR = env.bool("TRUST_X_FORWARDED_FOR", default=False)

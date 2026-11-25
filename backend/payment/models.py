@@ -24,6 +24,20 @@ class Payment(models.Model):
         DEPOSIT = "DEPOSIT", _("Security Deposit")
         OTHER = "OTHER", _("Other")
 
+    class Method(models.TextChoices):
+        ESEWA = "ESEWA", _("eSewa")
+        CARD = "CARD", _("Bank card")
+
+    # Unguessable public identifier, also used as the gateway transaction id.
+    reference = models.CharField(max_length=40, unique=True, null=True, blank=True, editable=False)
+    method = models.CharField(_("Method"), max_length=10, choices=Method.choices, blank=True, default="")
+    failure_reason = models.CharField(_("Failure reason"), max_length=255, blank=True)
+    # Only brand + last 4 digits are ever stored for cards. Never the full number / CVC.
+    card_brand = models.CharField(max_length=20, blank=True)
+    card_last4 = models.CharField(max_length=4, blank=True)
+    charge_attempts = models.PositiveSmallIntegerField(default=0, editable=False)
+    expires_at = models.DateTimeField(null=True, blank=True)
+
     tenant = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -78,3 +92,31 @@ class Payment(models.Model):
 
     def __str__(self) -> str:
         return f"Payment {self.id} – {self.amount} {self.currency} ({self.status})"
+
+
+
+class PaymentEvent(models.Model):
+    """
+    Append-only audit trail for a payment (created, verified, failed, ...).
+    Rows cannot be edited or deleted through the ORM instance API.
+    """
+
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="events")
+    event = models.CharField(max_length=40)
+    message = models.CharField(max_length=255, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise PermissionError("Payment events are immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("Payment events are immutable.")
+
+    def __str__(self) -> str:
+        return f"{self.payment_id} {self.event}"

@@ -2,7 +2,7 @@
 
 import Header from "@/components/Header";
 import { resendOTP } from "@/lib/api";
-import { setAuth } from "@/lib/auth";
+import { safeRedirect, setAuth } from "@/lib/auth";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
@@ -26,6 +26,7 @@ function LoginContent() {
   useEffect(() => {
     const qEmail = searchParams.get("email");
     if (qEmail) setEmail(qEmail);
+    if (searchParams.get("expired")) setMessage("Your session expired. Please sign in again to continue.");
   }, [searchParams]);
 
   useEffect(() => {
@@ -44,6 +45,13 @@ function LoginContent() {
     // Store tokens and user profile
     const tokens = data.tokens || { access: data.access, refresh: data.refresh };
     setAuth(tokens, data.user as never);
+
+    // Return to where the user was heading (same-site paths only: blocks open redirects)
+    const next = safeRedirect(searchParams.get("next"));
+    if (next) {
+      router.push(next);
+      return;
+    }
 
     // Role-based destination
     if (data.user?.role === "LANDLORD") {

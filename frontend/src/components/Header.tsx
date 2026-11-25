@@ -96,6 +96,12 @@ export default function Header() {
                   My Properties
                 </Link>
                 <Link
+                  href="/landlord/payments"
+                  className="text-[14px] font-medium text-slate-500 hover:text-slate-900 transition-colors"
+                >
+                  Payments
+                </Link>
+                <Link
                   href="/landlord/properties/new"
                   className="text-[14px] font-medium text-teal-700 hover:text-teal-800 transition-colors"
                 >
@@ -215,6 +221,13 @@ export default function Header() {
                   onClick={() => setOpen(false)}
                 >
                   My Properties
+                </Link>
+                <Link
+                  href="/landlord/payments"
+                  className="block px-2 py-2 text-sm font-medium text-slate-700"
+                  onClick={() => setOpen(false)}
+                >
+                  Payments
                 </Link>
                 <Link
                   href="/landlord/properties/new"

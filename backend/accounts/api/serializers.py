@@ -5,6 +5,7 @@ from datetime import timedelta
 from django.utils import timezone
 from rest_framework import serializers
 
+from accounts import audit
 from accounts.models import User
 from accounts.otpservice import OTPService
 
@@ -144,7 +145,17 @@ class LoginSerializer(serializers.Serializer):
         )
 
         if not user:
-            # Generic message to avoid user enumeration
+            # Count the failure against the real account (if any) and lock after repeated
+            # failures. The response stays generic to avoid user enumeration.
+            target = User.objects.filter(email__iexact=email).first()
+            if target:
+                target.failed_login_attempts = (target.failed_login_attempts or 0) + 1
+                fields = ["failed_login_attempts"]
+                if target.failed_login_attempts >= 8:
+                    target.locked_until = timezone.now() + timedelta(minutes=15)
+                    fields.append("locked_until")
+                target.save(update_fields=fields)
+                audit.record(self.context.get("request"), target, "LOGIN_FAILED", success=False)
             raise serializers.ValidationError("Invalid email or password.")
 
         if user.locked_until and user.locked_until > timezone.now():
@@ -236,6 +247,8 @@ class UserPublicSerializer(serializers.ModelSerializer):
             "phone_number",
             "is_active",
             "two_factor_enabled",
+            "password_changed_at",
+            "last_login",
             "date_joined",
         ]
         read_only_fields = fields
@@ -291,3 +304,64 @@ class TwoFactorDisableSerializer(serializers.Serializer):
         if not self.context["request"].user.check_password(value):
             raise serializers.ValidationError("Incorrect password.")
         return value
+
+
+class ProfileUpdateSerializer(serializers.ModelSerializer):
+    """Fields a user may edit about themselves. Email and role are NOT editable here."""
+
+    class Meta:
+        model = User
+        fields = ["username", "first_name", "last_name", "phone_number"]
+
+    def validate_username(self, value):
+        value = value.strip()
+        if len(value) < 3:
+            raise serializers.ValidationError("Username must be at least 3 characters.")
+        return value
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    new_password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    new_password_confirm = serializers.CharField(write_only=True, style={"input_type": "password"})
+
+    def validate_current_password(self, value):
+        if not self.context["request"].user.check_password(value):
+            raise serializers.ValidationError("Current password is incorrect.")
+        return value
+
+    def validate(self, attrs):
+        user = self.context["request"].user
+        if attrs["new_password"] != attrs["new_password_confirm"]:
+            raise serializers.ValidationError({"new_password_confirm": "Passwords do not match."})
+        if attrs["new_password"] == attrs["current_password"]:
+            raise serializers.ValidationError({"new_password": "Choose a password you have not used just now."})
+        try:
+            validate_password(attrs["new_password"], user=user)
+        except Exception as exc:  # DjangoValidationError -> DRF
+            from django.core.exceptions import ValidationError as DjangoValidationError
+
+            if isinstance(exc, DjangoValidationError):
+                raise serializers.ValidationError({"new_password": list(exc.messages)})
+            raise
+        return attrs
+
+
+class PasswordConfirmSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True, style={"input_type": "password"})
+
+    def validate_password(self, value):
+        if not self.context["request"].user.check_password(value):
+            raise serializers.ValidationError("Incorrect password.")
+        return value
+
+
+class AuthEventSerializer(serializers.ModelSerializer):
+    label = serializers.CharField(source="get_event_display", read_only=True)
+
+    class Meta:
+        from accounts.models import AuthEvent as _AuthEvent
+
+        model = _AuthEvent
+        fields = ["id", "event", "label", "success", "ip_address", "user_agent", "created_at"]
+        read_only_fields = fields

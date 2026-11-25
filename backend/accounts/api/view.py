@@ -1,4 +1,8 @@
+import json
+
 from django.contrib.auth import login, logout
+from django.db.models import Q
+from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.generics import CreateAPIView
@@ -8,7 +12,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from accounts import audit
 from accounts.api.serializers import (
+    AuthEventSerializer,
+    ChangePasswordSerializer,
+    PasswordConfirmSerializer,
+    ProfileUpdateSerializer,
     LandlordRegistrationSerializer,
     LoginSerializer,
     OTPLoginVerifySerializer,
@@ -20,7 +29,8 @@ from accounts.api.serializers import (
     TwoFactorEnableSerializer,
     UserPublicSerializer,
 )
-from accounts.models import User
+from accounts.models import AuthEvent, User
+from accounts.tokens import revoke_all_tokens
 from accounts.otpservice import OTPService
 
 
@@ -94,6 +104,7 @@ class ActivateAccountView(APIView):
             ]
         )
 
+        audit.record(request, user, "ACCOUNT_ACTIVATED")
         return Response(
             {
                 "detail": "Account activated successfully. You may now log in.",
@@ -107,6 +118,7 @@ def _issue_session(request, user, detail):
     """Create JWT pair + Django session and build the standard login response."""
     refresh = RefreshToken.for_user(user)
     login(request, user)
+    audit.record(request, user, "LOGIN_SUCCESS")
     return Response(
         {
             "detail": detail,
@@ -187,6 +199,7 @@ class LoginVerifyView(APIView):
 
         # Also create a server-side session (session-based auth)
         login(request, user)
+        audit.record(request, user, "LOGIN_SUCCESS")
 
         return Response(
             {
@@ -253,7 +266,10 @@ class PasswordResetView(APIView):
         user.set_password(serializer.validated_data["password"])
         user.failed_login_attempts = 0
         user.locked_until = None
-        user.save(update_fields=["password", "failed_login_attempts", "locked_until"])
+        user.password_changed_at = timezone.now()
+        user.save(update_fields=["password", "failed_login_attempts", "locked_until", "password_changed_at"])
+        revoke_all_tokens(user)  # a reset invalidates every existing session
+        audit.record(request, user, "PASSWORD_RESET")
 
         return Response(
             {"detail": "Password reset successfully. You may now log in."},
@@ -267,6 +283,7 @@ class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        audit.record(request, request.user, "LOGOUT")
         # Session logout
         logout(request)
 
@@ -312,6 +329,7 @@ class TwoFactorEnableView(APIView):
         user = request.user
         user.two_factor_enabled = True
         user.save(update_fields=["two_factor_enabled"])
+        audit.record(request, user, "TWO_FACTOR_ENABLED")
         return Response(
             {"detail": "Two-factor authentication enabled.", "user": UserPublicSerializer(user).data}
         )
@@ -329,15 +347,135 @@ class TwoFactorDisableView(APIView):
         user = request.user
         user.two_factor_enabled = False
         user.save(update_fields=["two_factor_enabled"])
+        audit.record(request, user, "TWO_FACTOR_DISABLED")
         return Response(
             {"detail": "Two-factor authentication disabled.", "user": UserPublicSerializer(user).data}
         )
 
 
+def _fresh_tokens(user):
+    refresh = RefreshToken.for_user(user)
+    return {"access": str(refresh.access_token), "refresh": str(refresh)}
+
+
 class MeView(APIView):
-    """Return the currently authenticated user (works for both JWT and session)."""
+    """Return (GET) or update (PATCH) the authenticated user's own profile."""
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser, FormParser]
+
+    def get(self, request):
+        return Response(UserPublicSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = ProfileUpdateSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        audit.record(request, request.user, "PROFILE_UPDATED")
+        return Response(UserPublicSerializer(request.user).data)
+
+
+class ChangePasswordView(APIView):
+    """
+    Change password (requires current password).
+    Every other session is signed out; the caller receives fresh tokens.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser, FormParser]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        user.set_password(serializer.validated_data["new_password"])
+        user.password_changed_at = timezone.now()
+        user.save(update_fields=["password", "password_changed_at"])
+        revoke_all_tokens(user)
+        audit.record(request, user, "PASSWORD_CHANGED")
+        return Response(
+            {
+                "detail": "Password changed. You were signed out of all other devices.",
+                "tokens": _fresh_tokens(user),
+                "user": UserPublicSerializer(user).data,
+            }
+        )
+
+
+class RevokeSessionsView(APIView):
+    """Sign out of every device (blacklist all refresh tokens); keep this one signed in."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        revoke_all_tokens(request.user)
+        audit.record(request, request.user, "SESSIONS_REVOKED")
+        return Response(
+            {
+                "detail": "Signed out of all other devices.",
+                "tokens": _fresh_tokens(request.user),
+            }
+        )
+
+
+class SecurityActivityView(APIView):
+    """Most recent security events for the signed-in user."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(UserPublicSerializer(request.user).data)
+        events = AuthEvent.objects.filter(user=request.user)[:20]
+        return Response(AuthEventSerializer(events, many=True).data)
+
+
+class DeactivateAccountView(APIView):
+    """Deactivate the account after password confirmation. Re-activation needs an emailed OTP."""
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser, FormParser]
+
+    def post(self, request):
+        serializer = PasswordConfirmSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        audit.record(request, user, "ACCOUNT_DEACTIVATED")
+        revoke_all_tokens(user)
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+        logout(request)
+        return Response({"detail": "Your account has been deactivated."})
+
+
+class ExportDataView(APIView):
+    """Download everything we hold about the signed-in user as JSON (privacy / data portability)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from payment.models import Payment
+
+        user = request.user
+        payments = Payment.objects.filter(Q(tenant=user) | Q(landlord=user)).select_related("property")
+        data = {
+            "exported_at": timezone.now().isoformat(),
+            "profile": UserPublicSerializer(user).data,
+            "security_events": AuthEventSerializer(AuthEvent.objects.filter(user=user), many=True).data,
+            "payments": [
+                {
+                    "reference": p.reference,
+                    "property": p.property.name,
+                    "amount": p.amount,
+                    "currency": p.currency,
+                    "type": p.payment_type,
+                    "method": p.method,
+                    "status": p.status,
+                    "created_at": p.created_at.isoformat(),
+                    "completed_at": p.completed_at.isoformat() if p.completed_at else None,
+                }
+                for p in payments
+            ],
+        }
+        audit.record(request, user, "DATA_EXPORTED")
+        resp = HttpResponse(json.dumps(data, indent=2, default=str), content_type="application/json")
+        resp["Content-Disposition"] = 'attachment; filename="estateflow-my-data.json"'
+        return resp

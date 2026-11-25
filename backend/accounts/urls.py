@@ -7,7 +7,12 @@ from accounts.api.view import (
     LoginVerifyView,
     LoginView,
     LogoutView,
+    ChangePasswordView,
+    DeactivateAccountView,
+    ExportDataView,
     MeView,
+    RevokeSessionsView,
+    SecurityActivityView,
     PasswordResetView,
     ResendOTPView,
     TenantRegistrationView,
@@ -39,6 +44,13 @@ urlpatterns = [
     path("2fa/send/", TwoFactorSendView.as_view(), name="2fa-send"),
     path("2fa/enable/", TwoFactorEnableView.as_view(), name="2fa-enable"),
     path("2fa/disable/", TwoFactorDisableView.as_view(), name="2fa-disable"),
+
+    # Account settings
+    path("password/change/", ChangePasswordView.as_view(), name="password-change"),
+    path("sessions/revoke/", RevokeSessionsView.as_view(), name="sessions-revoke"),
+    path("security/activity/", SecurityActivityView.as_view(), name="security-activity"),
+    path("account/deactivate/", DeactivateAccountView.as_view(), name="account-deactivate"),
+    path("me/export/", ExportDataView.as_view(), name="me-export"),
 
     # Session / JWT logout & profile
     path("logout/", LogoutView.as_view(), name="logout"),

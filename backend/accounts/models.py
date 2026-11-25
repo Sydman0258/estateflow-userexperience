@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils.translation import gettext_lazy as _
@@ -62,6 +63,8 @@ class User(AbstractUser):
         help_text=_("When enabled, login requires an emailed one-time code."),
     )
 
+    password_changed_at = models.DateTimeField(null=True, blank=True, editable=False)
+
     # OTP / 2FA fields – never serialize these
     otp_secret_key = models.CharField(
         max_length=64,
@@ -106,3 +109,40 @@ class User(AbstractUser):
     @property
     def is_admin_role(self) -> bool:
         return self.role == self.Role.ADMIN or self.is_superuser
+
+
+
+class AuthEvent(models.Model):
+    """
+    Security audit trail shown to the user under Settings > Security.
+    Stores event type, IP and user-agent only. Never secrets, passwords or OTPs.
+    """
+
+    class Event(models.TextChoices):
+        LOGIN_SUCCESS = "LOGIN_SUCCESS", _("Signed in")
+        LOGIN_FAILED = "LOGIN_FAILED", _("Failed sign-in attempt")
+        LOGOUT = "LOGOUT", _("Signed out")
+        PASSWORD_CHANGED = "PASSWORD_CHANGED", _("Password changed")
+        PASSWORD_RESET = "PASSWORD_RESET", _("Password reset")
+        TWO_FACTOR_ENABLED = "TWO_FACTOR_ENABLED", _("Two-factor enabled")
+        TWO_FACTOR_DISABLED = "TWO_FACTOR_DISABLED", _("Two-factor disabled")
+        PROFILE_UPDATED = "PROFILE_UPDATED", _("Profile updated")
+        SESSIONS_REVOKED = "SESSIONS_REVOKED", _("Signed out of all devices")
+        ACCOUNT_ACTIVATED = "ACCOUNT_ACTIVATED", _("Account activated")
+        ACCOUNT_DEACTIVATED = "ACCOUNT_DEACTIVATED", _("Account deactivated")
+        DATA_EXPORTED = "DATA_EXPORTED", _("Personal data exported")
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="auth_events"
+    )
+    event = models.CharField(max_length=32, choices=Event.choices)
+    success = models.BooleanField(default=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.user_id} {self.event} {self.created_at:%Y-%m-%d %H:%M}"

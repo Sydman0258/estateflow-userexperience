@@ -36,7 +36,7 @@ class PropertySerializer(serializers.ModelSerializer):
         return ", ".join(p for p in parts if p)
 
     def get_price_display(self, obj):
-        return f"${obj.price:,}/mo"
+        return f"Rs. {obj.price:,}/mo"
 
     def get_image_url(self, obj):
         seeds = [

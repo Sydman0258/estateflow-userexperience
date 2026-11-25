@@ -1,8 +1,18 @@
 import Header from "@/components/Header";
-import { fetchProperties } from "@/lib/api";
+import { API_BASE, fetchProperties, Property } from "@/lib/api";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+
+/** Strict lookup: no demo fallback, so only real server listings are payable. */
+async function fetchReal(id: string): Promise<Property | null> {
+  try {
+    const res = await fetch(`${API_BASE}/properties/${encodeURIComponent(id)}/`, { cache: "no-store" });
+    return res.ok ? ((await res.json()) as Property) : null;
+  } catch {
+    return null;
+  }
+}
 
 const STATIC: Record<
   string,
@@ -54,7 +64,25 @@ export default async function PropertyDetailPage({
 }) {
   const { id } = await params;
 
-  let property = STATIC[id] || null;
+  // Real listings always win over the demo placeholders, so what a tenant sees
+  // (and pays for) is exactly what is stored on the server.
+  const real = await fetchReal(id);
+  let property = real
+    ? {
+        name: real.name,
+        price: real.price_display || `Rs. ${real.price.toLocaleString("en-IN")}/mo`,
+        location: real.location || `${real.suburb}, ${real.town}, ${real.province}`,
+        tags: [
+          real.bedrooms === 0 ? "Studio" : `${real.bedrooms} Bed`,
+          `${real.bathrooms} Bath`,
+          real.is_available ? "Available" : "Currently let",
+        ],
+        image: real.image_url,
+        description:
+          real.description || "A well-maintained property listed directly by a verified landlord.",
+      }
+    : STATIC[id] || null;
+  const payable = !!real;
 
   if (!property) {
     const all = await fetchProperties();
@@ -62,17 +90,11 @@ export default async function PropertyDetailPage({
     if (found) {
       property = {
         name: found.name,
-        price: found.price_display || `$${found.price.toLocaleString()}/mo`,
+        price: found.price_display || `Rs. ${found.price.toLocaleString("en-IN")}/mo`,
         location: found.location || `${found.suburb}, ${found.town}, ${found.province}`,
-        tags: [
-          found.bedrooms === 0 ? "Studio" : `${found.bedrooms} Bed`,
-          `${found.bathrooms} Bath`,
-          "Furnished",
-        ],
+        tags: [found.bedrooms === 0 ? "Studio" : `${found.bedrooms} Bed`, `${found.bathrooms} Bath`],
         image: found.image_url,
-        description:
-          found.description ||
-          "A well-maintained property listed directly by a verified landlord.",
+        description: found.description || "A well-maintained property listed directly by a verified landlord.",
       };
     }
   }
@@ -127,9 +149,25 @@ export default async function PropertyDetailPage({
               {property.description}
             </p>
 
-            <button className="bg-[#0f766e] hover:bg-[#0d5f59] text-white font-semibold px-8 py-3 rounded-xl transition-colors">
-              Request dates
-            </button>
+            <div className="flex flex-wrap gap-3">
+              {payable && (
+                <Link
+                  href={`/tenant/payments/new?property=${id}`}
+                  className="bg-[#0f766e] hover:bg-[#0d5f59] text-white font-semibold px-8 py-3 rounded-xl transition-colors"
+                >
+                  Pay rent or deposit
+                </Link>
+              )}
+              <button
+                className={
+                  payable
+                    ? "border border-slate-200 hover:border-slate-300 text-slate-700 font-semibold px-8 py-3 rounded-xl transition-colors"
+                    : "bg-[#0f766e] hover:bg-[#0d5f59] text-white font-semibold px-8 py-3 rounded-xl transition-colors"
+                }
+              >
+                Request dates
+              </button>
+            </div>
           </div>
         </div>
       </main>

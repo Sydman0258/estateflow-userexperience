@@ -23,7 +23,7 @@ class OTPService:
 
     INTERVAL = 120  # seconds
     DIGITS = 6
-    MIN_RESEND_SECONDS = 30  # prevent email flooding
+    MIN_RESEND_SECONDS = 45  # prevent email flooding
     MAX_ATTEMPTS = 5
 
     def __init__(self, user):

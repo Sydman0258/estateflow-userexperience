@@ -1,261 +1,416 @@
-import Header from "@/components/Header";
-import PropertyCard, { type CardProperty } from "@/components/PropertyCard";
+import Facade from "@/components/home/Facade";
+import HomeNav from "@/components/home/HomeNav";
+import ListingCard, { type Home } from "@/components/home/ListingCard";
+import MoveInCost from "@/components/home/MoveInCost";
+import { API_BASE, type Property } from "@/lib/api";
 import Link from "next/link";
 
-/** Exact featured homes from the design */
-const FEATURED: CardProperty[] = [
+const FOCUS =
+  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brick";
+
+const FIELD =
+  "w-full appearance-none rounded-xl border border-ink/15 bg-snow px-3.5 py-3 text-[15px] font-medium text-ink placeholder:font-normal placeholder:text-graphite/70 focus:border-brick focus:outline-none focus:ring-2 focus:ring-brick/25";
+
+const CHEVRON = {
+  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%234a5568' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
+  backgroundRepeat: "no-repeat",
+  backgroundPosition: "right 14px center",
+} as const;
+
+/**
+ * Starting rents per neighbourhood. These are sample figures: replace them with an
+ * aggregate from the API (min price grouped by town) once enough listings exist.
+ */
+const AREAS = [
   {
-    id: 1,
-    name: "The Atlantic Studio Loft",
-    price: "$2,450/mo",
-    availability: "Available now",
-    location: "Cobble Hill, Brooklyn, NY",
-    tags: ["1 Bed", "1 Bath", "Furnished"],
-    image:
-      "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=900&q=85",
+    area: "Jhamsikhel",
+    city: "Lalitpur",
+    note: "Roasteries, galleries and quiet brick lanes.",
+    from: 68000,
   },
   {
-    id: 2,
-    name: "SOMA Creative Residence",
-    price: "$2,200/mo",
-    availability: "May 1st",
-    location: "SoMa, San Francisco, CA",
-    tags: ["Studio", "1 Bath", "Utilities Inc."],
-    image:
-      "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=900&q=85",
+    area: "Lazimpat",
+    city: "Kathmandu",
+    note: "Embassy quarter, coworking floors and rooftop cafés.",
+    from: 74000,
   },
   {
-    id: 3,
-    name: "Brownstone Garden Flat",
-    price: "$2,500/mo",
-    availability: "Flexible",
-    location: "Lincoln Park, Chicago, IL",
-    tags: ["1 Bed", "1 Bath", "Private Patio"],
-    image:
-      "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=900&q=85",
+    area: "Lakeside",
+    city: "Pokhara",
+    note: "Phewa Lake at the door and the Annapurnas beyond it.",
+    from: 58000,
   },
 ];
 
-export default function HomePage() {
+/** Shown only while the API has no available listings. They link to search, not to a detail page. */
+const SAMPLE_HOMES: Home[] = [
+  {
+    id: "sample-patan",
+    href: "/browse?location=Lalitpur",
+    name: "Patan Courtyard",
+    location: "Jhamsikhel, Lalitpur",
+    beds: "Studio, 1 bath, furnished",
+    price: "NPR 68,000/mo",
+    available: true,
+  },
+  {
+    id: "sample-lazimpat",
+    href: "/browse?location=Kathmandu",
+    name: "Lazimpat House",
+    location: "Lazimpat, Kathmandu",
+    beds: "1 bed, 1 bath, furnished",
+    price: "NPR 74,000/mo",
+    available: true,
+  },
+  {
+    id: "sample-fewa",
+    href: "/browse?location=Pokhara",
+    name: "Fewa Terraces",
+    location: "Lakeside, Pokhara",
+    beds: "1 bed, 1 bath, furnished",
+    price: "NPR 58,000/mo",
+    available: true,
+  },
+];
+
+async function getHomes(): Promise<Home[]> {
+  try {
+    const res = await fetch(`${API_BASE}/properties/`, { cache: "no-store" });
+    if (!res.ok) throw new Error("bad status");
+    const data = await res.json();
+    const list: Property[] = Array.isArray(data) ? data : data.results || [];
+    const open = list.filter((p) => p.is_available).slice(0, 3);
+    if (open.length > 0) {
+      return open.map((p) => ({
+        id: p.id,
+        href: `/properties/${p.id}`,
+        name: p.name,
+        location: p.location || [p.suburb, p.town].filter(Boolean).join(", "),
+        beds: `${p.bedrooms === 0 ? "Studio" : `${p.bedrooms} bed`}, ${p.bathrooms} bath`,
+        price: p.price_display || `NPR ${p.price.toLocaleString("en-IN")}/mo`,
+        available: p.is_available,
+        image: p.image_url || undefined,
+      }));
+    }
+  } catch {
+    /* fall through to samples */
+  }
+  return SAMPLE_HOMES;
+}
+
+const STEPS = [
+  {
+    title: "Find a home",
+    body: "Search by area and monthly rent. Every listing shows the full rent in NPR, with no broker on top.",
+  },
+  {
+    title: "Send an application",
+    body: "Choose your move-in date and write to the landlord. It costs nothing to apply.",
+  },
+  {
+    title: "Pay once you're accepted",
+    body: "When the landlord says yes, pay the deposit and first month with eSewa or card.",
+  },
+];
+
+const TRUST = [
+  {
+    title: "Landlords are verified",
+    body: "Each listing belongs to a landlord account that has been checked, and you can read reviews from past tenants.",
+  },
+  {
+    title: "Two-step login when you want it",
+    body: "Turn it on from Settings. It stays off until you do.",
+  },
+  {
+    title: "One payment history",
+    body: "Rent and deposits are recorded on your dashboard, so tenant and landlord see the same figures.",
+  },
+];
+
+function Arrow({ className = "h-5 w-5" }: { className?: string }) {
   return (
-    <div className="min-h-screen flex flex-col bg-[#fafafa]">
-      <Header />
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14m0 0l-6-6m6 6l-6 6" />
+    </svg>
+  );
+}
 
-      {/* ───────── Hero ───────── */}
-      <section className="pt-14 sm:pt-20 pb-16 sm:pb-24">
-        <div className="max-w-[1120px] mx-auto px-5 sm:px-8">
-          <div className="max-w-[640px] mx-auto text-center">
-            {/* Badge */}
-            <div className="inline-flex items-center gap-2 text-[11px] font-semibold tracking-[0.06em] text-slate-600 bg-slate-100/80 px-3 py-1.5 rounded-full mb-7">
-              <span className="w-[6px] h-[6px] rounded-full bg-teal-500 shrink-0" />
-              DIRECT MONTHLY LEASES
-            </div>
+export default async function HomePage() {
+  const homes = await getHomes();
+  const [lead, ...rest] = homes;
 
-            {/* Headline – exact wording & line break */}
-            <h1 className="text-[2.15rem] sm:text-[2.75rem] lg:text-[3.15rem] font-bold tracking-[-0.025em] text-[#0f172a] leading-[1.12] mb-5">
-              Monthly rentals directly
-              <br />
-              from verified landlords.
+  return (
+    <div className="flex min-h-screen flex-col bg-snow font-body text-ink">
+      <HomeNav />
+
+      <main className="flex-1">
+        {/* ───────── Hero ───────── */}
+        <section className="mx-auto grid max-w-[1200px] gap-12 px-5 pb-20 pt-10 sm:px-8 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] lg:items-center lg:gap-16 lg:pb-28 lg:pt-16">
+          <div>
+            <h1 className="font-display text-[clamp(2.5rem,6.2vw,4.9rem)] font-semibold leading-[1.02] tracking-[-0.03em] text-balance">
+              Rent a home in Nepal. Pay the owner, not a broker.
             </h1>
-
-            <p className="text-[16px] sm:text-[17px] text-slate-500 max-w-[480px] mx-auto mb-10 leading-relaxed">
-              Discover furnished homes with transparent pricing, zero broker
-              markups, and simple monthly commitments.
+            <p className="mt-6 max-w-[52ch] text-[18px] leading-[1.6] text-graphite">
+              Monthly rentals in Kathmandu, Lalitpur and Pokhara, listed directly by
+              verified landlords. Prices are in NPR, and you pay only after your
+              application is accepted.
             </p>
 
-            {/* Search card – layout matches screenshot */}
-            <div className="bg-white rounded-2xl shadow-[0_4px_24px_rgba(15,23,42,0.06)] border border-slate-100 p-4 sm:p-5 text-left">
-              <form action="/browse" method="get">
-                {/* Top row */}
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-2.5">
-                  <div className="flex flex-wrap items-center gap-2 text-[13.5px] text-slate-500 flex-1">
-                    <span className="whitespace-nowrap">I&apos;m looking for</span>
-                    <select
-                      name="type"
-                      defaultValue="apartment"
-                      className="appearance-none bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13.5px] font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-600 cursor-pointer pr-7"
-                      style={{
-                        backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
-                        backgroundRepeat: "no-repeat",
-                        backgroundPosition: "right 10px center",
-                      }}
-                    >
-                      <option value="apartment">an apartment</option>
-                      <option value="studio">a studio</option>
-                      <option value="house">a house</option>
-                    </select>
-                    <span>in</span>
-                    <input
-                      type="text"
-                      name="location"
-                      defaultValue="New York, NY"
-                      className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13.5px] font-medium text-slate-800 w-[118px] focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-600"
-                    />
-                    <span className="hidden sm:inline">under</span>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="bg-[#0f766e] hover:bg-[#0d5f59] text-white text-[14px] font-semibold px-5 py-2.5 rounded-xl transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
-                  >
-                    Show homes
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                    </svg>
-                  </button>
-                </div>
-
-                {/* Price row */}
-                <div className="mt-3 flex items-center gap-2">
-                  <span className="sm:hidden text-[13.5px] text-slate-500">under</span>
-                  <input
-                    type="text"
-                    name="max"
-                    defaultValue="$2,500/mo"
-                    className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13.5px] font-medium text-slate-800 w-[110px] focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-600"
-                  />
-                </div>
-
-                {/* Card footer */}
-                <div className="flex flex-wrap items-center justify-between gap-2 mt-3.5 pt-3.5 border-t border-slate-100 text-[12px] text-slate-400">
-                  <span>Leave empty to browse all verified listings.</span>
-                  <span className="flex items-center gap-1.5 text-teal-700 font-medium">
-                    <span className="w-[6px] h-[6px] rounded-full bg-teal-500" />
-                    No booking fees until accepted
-                  </span>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ───────── Curated collection ───────── */}
-      <section className="pb-20">
-        <div className="max-w-[1120px] mx-auto px-5 sm:px-8">
-          <div className="flex items-end justify-between mb-7">
-            <div>
-              <p className="text-[11px] font-semibold tracking-[0.08em] text-slate-400 uppercase mb-1">
-                Curated Collection
-              </p>
-              <h2 className="text-[1.65rem] sm:text-[1.85rem] font-bold text-[#0f172a] tracking-[-0.02em]">
-                Newly listed homes
-              </h2>
-            </div>
-            <Link
-              href="/browse"
-              className="text-[13.5px] font-semibold text-teal-700 hover:text-teal-800 flex items-center gap-0.5 mb-1"
+            <form
+              action="/browse"
+              method="get"
+              className="mt-9 grid gap-4 rounded-[22px] bg-white p-4 shadow-[0_24px_48px_-28px_rgba(14,27,51,0.45)] ring-1 ring-ink/10 sm:grid-cols-2 sm:p-5"
             >
-              See all 148 homes
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-              </svg>
-            </Link>
-          </div>
+              <label className="flex flex-col gap-1.5 sm:col-span-2">
+                <span className="text-[14px] font-semibold">Where do you want to live?</span>
+                <input
+                  type="text"
+                  name="location"
+                  list="areas"
+                  autoComplete="off"
+                  placeholder="Kathmandu, Lalitpur, Pokhara"
+                  className={FIELD}
+                />
+                <datalist id="areas">
+                  <option value="Kathmandu" />
+                  <option value="Lalitpur" />
+                  <option value="Pokhara" />
+                  <option value="Bhaktapur" />
+                  <option value="Jhamsikhel" />
+                  <option value="Lazimpat" />
+                  <option value="Lakeside" />
+                </datalist>
+              </label>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-            {FEATURED.map((p) => (
-              <PropertyCard key={p.id} property={p} />
-            ))}
-          </div>
-        </div>
-      </section>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[14px] font-semibold">Home type</span>
+                <select name="type" defaultValue="" className={FIELD} style={CHEVRON}>
+                  <option value="">Any type</option>
+                  <option value="studio">Studio</option>
+                  <option value="apartment">Apartment</option>
+                  <option value="house">House</option>
+                </select>
+              </label>
 
-      {/* ───────── How a booking works ───────── */}
-      <section className="py-16 sm:py-20 bg-white border-y border-slate-100">
-        <div className="max-w-[1120px] mx-auto px-5 sm:px-8">
-          <div className="max-w-[520px] mb-12">
-            <p className="text-[11px] font-semibold tracking-[0.08em] text-slate-400 uppercase mb-2">
-              Streamlined Booking
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[14px] font-semibold">Most you&apos;ll pay a month</span>
+                <select name="max" defaultValue="" className={FIELD} style={CHEVRON}>
+                  <option value="">No limit</option>
+                  <option value="30000">NPR 30,000</option>
+                  <option value="50000">NPR 50,000</option>
+                  <option value="75000">NPR 75,000</option>
+                  <option value="100000">NPR 1,00,000</option>
+                  <option value="150000">NPR 1,50,000</option>
+                </select>
+              </label>
+
+              <button
+                type="submit"
+                className={`inline-flex items-center justify-center gap-2 rounded-xl bg-brick px-6 py-3.5 text-[16px] font-semibold text-white transition-colors hover:bg-brick-deep sm:col-span-2 ${FOCUS}`}
+              >
+                Show homes
+                <Arrow className="h-5 w-5" />
+              </button>
+            </form>
+            <p className="mt-4 text-[14px] text-graphite">
+              Leave the fields empty to see every verified listing.
             </p>
-            <h2 className="text-[1.65rem] sm:text-[1.85rem] font-bold text-[#0f172a] tracking-[-0.02em] mb-2.5">
-              How a booking works
+          </div>
+
+          <figure className="mx-auto w-full max-w-[460px] lg:max-w-none">
+            <div className="aspect-[520/640] overflow-hidden rounded-t-[999px] rounded-b-[28px] bg-ink shadow-[0_40px_70px_-40px_rgba(14,27,51,0.7)]">
+              <Facade />
+            </div>
+            <figcaption className="mt-3 text-[13px] text-graphite">
+              Drawn after the brick-and-timber houses of Patan. ghar (घर) means home.
+            </figcaption>
+          </figure>
+        </section>
+
+        {/* ───────── Neighbourhoods ───────── */}
+        <section id="areas" className="border-t border-ink/10">
+          <div className="mx-auto max-w-[1200px] px-5 py-20 sm:px-8 lg:py-24">
+            <h2 className="max-w-[18ch] font-display text-[clamp(1.9rem,4vw,3rem)] font-semibold leading-[1.08] tracking-[-0.02em] text-balance">
+              Start with the neighbourhood
             </h2>
-            <p className="text-[15px] text-slate-500 leading-relaxed">
-              A predictable, transparent procedure built to replace legacy brokers and
-              paper leases.
+            <p className="mt-4 max-w-[56ch] text-[17px] leading-relaxed text-graphite">
+              Three places where renters ask for us most. Pick one and see what is open.
             </p>
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-10 md:gap-12">
-            {[
-              {
-                num: "01",
-                title: "1. Discover homes",
-                body: "Filter by city, pricing, and move-in term. Every property features guaranteed all-inclusive monthly rates up front.",
-              },
-              {
-                num: "02",
-                title: "2. Request dates",
-                body: "Select your exact check-in and departure windows. Review your complete summary with zero surprise fees or upfront charges.",
-              },
-              {
-                num: "03",
-                title: "3. Book directly",
-                body: "Communicate with verified property owners directly. Pay securely only after your tenancy is officially accepted.",
-              },
-            ].map((step) => (
-              <div key={step.num}>
-                <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 text-[12px] font-semibold text-slate-500 mb-4">
-                  {step.num}
-                </span>
-                <h3 className="font-semibold text-[16px] text-slate-900 mb-2">
-                  {step.title}
-                </h3>
-                <p className="text-[14px] text-slate-500 leading-relaxed">
-                  {step.body}
-                </p>
-              </div>
-            ))}
+            <ul className="mt-10 border-t border-ink">
+              {AREAS.map((a) => (
+                <li key={a.area} className="border-b border-ink/20">
+                  <Link
+                    href={`/browse?location=${encodeURIComponent(a.city)}`}
+                    className={`group grid items-center gap-x-10 gap-y-2 px-3 py-7 transition-colors duration-150 hover:bg-ink hover:text-snow focus-visible:bg-ink focus-visible:text-snow md:grid-cols-[1.1fr_1.3fr_auto_auto] ${FOCUS}`}
+                  >
+                    <span className="font-display text-[clamp(2.2rem,5vw,3.75rem)] font-semibold leading-none tracking-[-0.03em]">
+                      {a.area}
+                    </span>
+                    <span className="text-[16px] leading-snug text-graphite transition-colors group-hover:text-mist group-focus-visible:text-mist">
+                      <span className="font-semibold text-ink transition-colors group-hover:text-snow group-focus-visible:text-snow">
+                        {a.city}.
+                      </span>{" "}
+                      {a.note}
+                    </span>
+                    <span className="text-[16px] font-semibold tabular-nums text-brick transition-colors group-hover:text-marigold group-focus-visible:text-marigold">
+                      From NPR {a.from.toLocaleString("en-IN")} a month
+                    </span>
+                    <Arrow className="hidden h-6 w-6 transition-transform group-hover:translate-x-1 md:block" />
+                  </Link>
+                </li>
+              ))}
+            </ul>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* ───────── Landlord CTA ───────── */}
-      <section className="py-14 sm:py-16">
-        <div className="max-w-[1120px] mx-auto px-5 sm:px-8">
-          <div className="bg-[#0f2e2a] rounded-[20px] px-7 py-10 sm:px-12 sm:py-12 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-8">
-            <div className="max-w-[480px]">
-              <span className="inline-block text-[11px] font-semibold tracking-wide text-teal-200/90 bg-teal-900/50 px-3 py-1 rounded-full mb-4">
-                For Owners & Hosts
-              </span>
-              <h2 className="text-[1.6rem] sm:text-[1.85rem] font-bold text-white tracking-[-0.02em] mb-2.5">
-                Own a home to rent out?
+        {/* ───────── Newly listed ───────── */}
+        <section id="homes" className="border-y border-ink/10 bg-white">
+          <div className="mx-auto max-w-[1200px] px-5 py-20 sm:px-8 lg:py-24">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <h2 className="font-display text-[clamp(1.9rem,4vw,3rem)] font-semibold leading-[1.08] tracking-[-0.02em]">
+                Newly listed
               </h2>
-              <p className="text-[15px] text-slate-300/90 leading-relaxed">
-                List your space in under 10 minutes, screen qualified mid-term tenants,
-                and manage monthly payouts with complete autonomy.
+              <Link
+                href="/browse"
+                className={`inline-flex items-center gap-2 rounded-md text-[16px] font-semibold text-brick underline-offset-4 hover:underline ${FOCUS}`}
+              >
+                See all homes
+                <Arrow className="h-4 w-4" />
+              </Link>
+            </div>
+
+            <div className="mt-10 grid gap-6 lg:grid-cols-12">
+              <div className="lg:col-span-7">
+                <ListingCard home={lead} featured />
+              </div>
+              <div className="flex flex-col gap-6 lg:col-span-5">
+                {rest.map((h) => (
+                  <ListingCard key={h.id} home={h} />
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ───────── Move-in cost ───────── */}
+        <section id="cost" className="bg-ink text-snow">
+          <div className="mx-auto grid max-w-[1200px] items-center gap-12 px-5 py-20 sm:px-8 lg:grid-cols-2 lg:gap-20 lg:py-24">
+            <div>
+              <h2 className="font-display text-[clamp(1.9rem,4vw,3rem)] font-semibold leading-[1.08] tracking-[-0.02em] text-balance">
+                Know what move-in costs before you apply
+              </h2>
+              <p className="mt-5 max-w-[48ch] text-[17px] leading-relaxed text-mist">
+                Move-in is the first month&apos;s rent plus a one-month deposit. Nothing is added
+                for a broker, because there isn&apos;t one. Drag the slider to try your budget.
+              </p>
+              <Link
+                href="/browse"
+                className="mt-8 inline-flex items-center gap-2 rounded-full bg-marigold px-6 py-3 text-[15px] font-semibold text-ink transition-colors hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-marigold"
+              >
+                Find a home in your range
+              </Link>
+            </div>
+            <MoveInCost />
+          </div>
+        </section>
+
+        {/* ───────── How it works ───────── */}
+        <section id="how" className="mx-auto max-w-[1200px] px-5 py-20 sm:px-8 lg:py-24">
+          <h2 className="max-w-[20ch] font-display text-[clamp(1.9rem,4vw,3rem)] font-semibold leading-[1.08] tracking-[-0.02em] text-balance">
+            Three steps from search to keys
+          </h2>
+
+          <ol className="relative mt-12 grid gap-10 md:grid-cols-3 md:gap-8">
+            <span
+              aria-hidden="true"
+              className="absolute left-5 top-5 hidden h-px w-[calc(100%-2.5rem)] bg-ink/20 md:block"
+            />
+            {STEPS.map((s, i) => (
+              <li key={s.title} className="relative flex gap-5 md:block">
+                <span className="relative z-10 grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brick font-display text-[17px] font-semibold text-white ring-8 ring-snow">
+                  {i + 1}
+                </span>
+                <div className="md:mt-6">
+                  <h3 className="font-display text-[22px] font-semibold leading-tight">{s.title}</h3>
+                  <p className="mt-2 max-w-[38ch] text-[16px] leading-relaxed text-graphite">
+                    {s.body}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        {/* ───────── Trust ───────── */}
+        <section id="trust" className="border-y border-ink/10 bg-mist/50">
+          <div className="mx-auto max-w-[1200px] px-5 py-16 sm:px-8 lg:py-20">
+            <h2 className="max-w-[22ch] font-display text-[clamp(1.7rem,3.4vw,2.5rem)] font-semibold leading-[1.1] tracking-[-0.02em] text-balance">
+              Made so renters and owners can both check the other side
+            </h2>
+            <div className="mt-10 grid gap-8 md:grid-cols-3 md:gap-0 md:divide-x md:divide-ink/20">
+              {TRUST.map((t) => (
+                <div key={t.title} className="md:px-8 md:first:pl-0 md:last:pr-0">
+                  <h3 className="font-display text-[20px] font-semibold leading-tight">{t.title}</h3>
+                  <p className="mt-2 max-w-[36ch] text-[16px] leading-relaxed text-graphite">
+                    {t.body}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* ───────── Landlords ───────── */}
+        <section className="mx-auto max-w-[1200px] px-5 py-20 sm:px-8 lg:py-24">
+          <div className="grid items-center gap-8 rounded-[32px] bg-brick px-7 py-12 text-white sm:px-12 lg:grid-cols-[1.4fr_1fr] lg:py-14">
+            <div>
+              <h2 className="font-display text-[clamp(1.9rem,4vw,3rem)] font-semibold leading-[1.08] tracking-[-0.02em] text-balance">
+                Own a home in Nepal? Rent it out directly.
+              </h2>
+              <p className="mt-4 max-w-[50ch] text-[17px] leading-relaxed text-white/90">
+                List your space in under 10 minutes, review tenants who apply, and follow
+                every monthly payment from one dashboard.
               </p>
             </div>
-            <Link
-              href="/auth/register/landlord"
-              className="bg-white hover:bg-slate-50 text-slate-900 text-[14px] font-semibold px-6 py-3 rounded-xl transition-colors whitespace-nowrap shadow-lg"
-            >
-              Create a landlord account
-            </Link>
+            <div className="flex flex-col gap-3 sm:flex-row lg:flex-col lg:items-stretch">
+              <Link
+                href="/auth/register/landlord"
+                className="inline-flex items-center justify-center rounded-full bg-snow px-6 py-3.5 text-[15px] font-semibold text-ink transition-colors hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+              >
+                Create a landlord account
+              </Link>
+              <Link
+                href="/list"
+                className="inline-flex items-center justify-center rounded-full border border-white/60 px-6 py-3.5 text-[15px] font-semibold text-white transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+              >
+                See how listing works
+              </Link>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </main>
 
       {/* ───────── Footer ───────── */}
-      <footer className="border-t border-slate-200/80 py-7 mt-auto">
-        <div className="max-w-[1120px] mx-auto px-5 sm:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-[13px] text-slate-400">
+      <footer className="border-t border-ink/10">
+        <div className="mx-auto flex max-w-[1200px] flex-col gap-4 px-5 py-8 text-[14px] text-graphite sm:flex-row sm:items-center sm:justify-between sm:px-8">
           <p>
-            <span className="font-semibold text-slate-600">EstateFlow</span>
-            {" "}— Monthly rentals, listed directly by landlords.
+            <span className="font-display text-[17px] font-semibold text-ink">EstateFlow</span>{" "}
+            Monthly rentals in Nepal, listed directly by landlords.
           </p>
-          <div className="flex items-center gap-5">
-            <Link href="/privacy" className="hover:text-slate-700 transition-colors">
+          <nav aria-label="Footer" className="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <Link href="/privacy" className={`rounded-sm hover:text-ink ${FOCUS}`}>
               Privacy
             </Link>
-            <Link href="/terms" className="hover:text-slate-700 transition-colors">
+            <Link href="/terms" className={`rounded-sm hover:text-ink ${FOCUS}`}>
               Terms
             </Link>
-            <Link href="/support" className="hover:text-slate-700 transition-colors">
+            <Link href="/support" className={`rounded-sm hover:text-ink ${FOCUS}`}>
               Support
             </Link>
-            <span>© 2025 EstateFlow Inc.</span>
-          </div>
+            <span>© {new Date().getFullYear()} EstateFlow</span>
+          </nav>
         </div>
       </footer>
     </div>
